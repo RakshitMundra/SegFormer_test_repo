@@ -88,7 +88,8 @@ def get_loaders(data_dir, encoder_name, img_size, batch_size, val_split):
 
 
 def build_model(encoder_name):
-    return smp.Segformer(
+    # SegFormer (MiT) encoder with a U-Net decoder head.
+    return smp.Unet(
         encoder_name=encoder_name,
         encoder_weights="imagenet",
         in_channels=3,
@@ -116,7 +117,7 @@ def _make_loss(
     return loss_fn
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def _evaluate(model, loader, device):
     """Mean (micro) IoU over a loader."""
     if len(loader.dataset) == 0:
