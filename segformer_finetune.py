@@ -24,6 +24,9 @@ from tqdm.auto import tqdm
 # Best weights are always written under this directory (created if missing).
 SAVE_DIR = "/kaggle/working/checkpoints"
 
+# How often (in batches) to sample training IoU for the progress bar.
+IOU_LOG_EVERY = 50
+
 
 def _find_pairs(data_dir):
     """Return [(sat_path, mask_path), ...] for every *_sat file with a mask."""
@@ -118,11 +121,17 @@ def _make_loss(
     return loss_fn
 
 
+def _batch_stats(logits, masks):
+    """Summed (tp, fp, fn) for a batch of binary logits, kept on-device."""
+    preds = (logits.sigmoid() > 0.5).long()
+    tp, fp, fn, _ = smp.metrics.get_stats(preds, masks.long(), mode="binary")
+    return tp.sum(), fp.sum(), fn.sum()
+
+
 def _iou(logits, masks):
     """Micro IoU for one batch of binary logits."""
-    preds = (logits.sigmoid() > 0.5).long()
-    tp, fp, fn, tn = smp.metrics.get_stats(preds, masks.long(), mode="binary")
-    return smp.metrics.iou_score(tp, fp, fn, tn, reduction="micro").item()
+    tp, fp, fn = _batch_stats(logits, masks)
+    return (tp / (tp + fp + fn + 1e-7)).item()
 
 
 @torch.inference_mode()
@@ -206,12 +215,10 @@ def train_model(
         model.train()
         model.encoder.eval()  # encoder is frozen; keep it in eval mode
         train_loss = 0.0
-        iou_sum, n_batches = 0.0, 0
-        with tqdm(
-            total=len(train_loader),
-            desc=f"epoch {epoch}/{epochs}",
-        ) as pbar:
-            for images, masks in train_loader:
+        tp = fp = fn = 0  # accumulated on-GPU; one sync per metric update
+        n_batches = len(train_loader)
+        with tqdm(total=n_batches, desc=f"epoch {epoch}/{epochs}") as pbar:
+            for step, (images, masks) in enumerate(train_loader, 1):
                 images, masks = images.to(device), masks.to(device)
                 optimizer.zero_grad()
                 logits = model(images)
@@ -219,12 +226,17 @@ def train_model(
                 loss.backward()
                 optimizer.step()
                 train_loss += loss.item() * images.size(0)
-                iou_sum += _iou(logits.detach(), masks)
-                n_batches += 1
+                # sample IoU stats every IOU_LOG_EVERY batches to keep the
+                # inner loop free of per-batch metric work and syncs
+                if step % IOU_LOG_EVERY == 0 or step == n_batches:
+                    bt, bf, bn = _batch_stats(logits.detach(), masks)
+                    tp, fp, fn = tp + bt, fp + bf, fn + bn
+                    pbar.set_postfix(
+                        loss=loss.item(), iou=(tp / (tp + fp + fn + 1e-7)).item()
+                    )
                 pbar.update(1)
-                pbar.set_postfix(loss=loss.item(), iou=iou_sum / n_batches)
         train_loss /= len(train_loader.dataset)
-        train_iou = iou_sum / n_batches
+        train_iou = float(tp / (tp + fp + fn + 1e-7))
 
         val_iou, val_loss = _evaluate(model, val_loader, device, loss_fn)
         history.append(
