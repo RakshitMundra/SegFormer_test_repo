@@ -118,6 +118,13 @@ def _make_loss(
     return loss_fn
 
 
+def _iou(logits, masks):
+    """Micro IoU for one batch of binary logits."""
+    preds = (logits.sigmoid() > 0.5).long()
+    tp, fp, fn, tn = smp.metrics.get_stats(preds, masks.long(), mode="binary")
+    return smp.metrics.iou_score(tp, fp, fn, tn, reduction="micro").item()
+
+
 @torch.inference_mode()
 def _evaluate(model, loader, device):
     """Mean (micro) IoU over a loader."""
@@ -127,9 +134,7 @@ def _evaluate(model, loader, device):
     scores = []
     for images, masks in loader:
         images, masks = images.to(device), masks.to(device)
-        preds = (model(images).sigmoid() > 0.5).long()
-        tp, fp, fn, tn = smp.metrics.get_stats(preds, masks.long(), mode="binary")
-        scores.append(smp.metrics.iou_score(tp, fp, fn, tn, reduction="micro").item())
+        scores.append(_iou(model(images), masks))
     return float(np.mean(scores))
 
 
@@ -184,6 +189,7 @@ def train_model(
         model.train()
         model.encoder.eval()  # encoder is frozen; keep it in eval mode
         train_loss = 0.0
+        iou_sum, n_batches = 0.0, 0
         with tqdm(
             total=len(train_loader.dataset),
             desc=f"epoch {epoch}/{epochs}",
@@ -192,17 +198,27 @@ def train_model(
             for images, masks in train_loader:
                 images, masks = images.to(device), masks.to(device)
                 optimizer.zero_grad()
-                loss = loss_fn(model(images), masks)
+                logits = model(images)
+                loss = loss_fn(logits, masks)
                 loss.backward()
                 optimizer.step()
                 train_loss += loss.item() * images.size(0)
+                iou_sum += _iou(logits.detach(), masks)
+                n_batches += 1
                 pbar.update(images.size(0))
-                pbar.set_postfix(loss=loss.item())
+                pbar.set_postfix(loss=loss.item(), iou=iou_sum / n_batches)
         train_loss /= len(train_loader.dataset)
+        train_iou = iou_sum / n_batches
 
         val_iou = _evaluate(model, val_loader, device)
-        history.append({"epoch": epoch, "train_loss": train_loss, "val_iou": val_iou})
-        print(f"epoch {epoch}/{epochs}  train_loss={train_loss:.4f}  val_iou={val_iou:.4f}")
+        history.append(
+            {"epoch": epoch, "train_loss": train_loss,
+             "train_iou": train_iou, "val_iou": val_iou}
+        )
+        print(
+            f"epoch {epoch}/{epochs}  train_loss={train_loss:.4f}  "
+            f"train_iou={train_iou:.4f}  val_iou={val_iou:.4f}"
+        )
 
         if val_iou > best_iou:
             best_iou = val_iou
