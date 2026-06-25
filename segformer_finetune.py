@@ -126,16 +126,25 @@ def _iou(logits, masks):
 
 
 @torch.inference_mode()
-def _evaluate(model, loader, device):
-    """Mean (micro) IoU over a loader."""
+def _evaluate(model, loader, device, loss_fn=None):
+    """Mean (micro) IoU over a loader; also mean loss when loss_fn is given.
+
+    Returns (iou, loss); loss is nan when loss_fn is None.
+    """
     if len(loader.dataset) == 0:
-        return float("nan")
+        return float("nan"), float("nan")
     model.eval()
     scores = []
+    loss_sum = 0.0
     for images, masks in loader:
         images, masks = images.to(device), masks.to(device)
-        scores.append(_iou(model(images), masks))
-    return float(np.mean(scores))
+        logits = model(images)
+        scores.append(_iou(logits, masks))
+        if loss_fn is not None:
+            loss_sum += loss_fn(logits, masks).item() * images.size(0)
+    iou = float(np.mean(scores))
+    loss = loss_sum / len(loader.dataset) if loss_fn is not None else float("nan")
+    return iou, loss
 
 
 def train_model(
@@ -209,14 +218,15 @@ def train_model(
         train_loss /= len(train_loader.dataset)
         train_iou = iou_sum / n_batches
 
-        val_iou = _evaluate(model, val_loader, device)
+        val_iou, val_loss = _evaluate(model, val_loader, device, loss_fn)
         history.append(
-            {"epoch": epoch, "train_loss": train_loss,
-             "train_iou": train_iou, "val_iou": val_iou}
+            {"epoch": epoch, "train_loss": train_loss, "train_iou": train_iou,
+             "val_loss": val_loss, "val_iou": val_iou}
         )
         print(
-            f"epoch {epoch}/{epochs}  train_loss={train_loss:.4f}  "
-            f"train_iou={train_iou:.4f}  val_iou={val_iou:.4f}"
+            f"epoch {epoch}/{epochs}  "
+            f"train_loss={train_loss:.4f}  train_iou={train_iou:.4f}  "
+            f"val_loss={val_loss:.4f}  val_iou={val_iou:.4f}"
         )
 
         if val_iou > best_iou:
@@ -246,6 +256,6 @@ def test_model(
     model = build_model(encoder_name).to(device)
     model.load_state_dict(torch.load(checkpoint_path, map_location=device))
 
-    iou = _evaluate(model, loader, device)
+    iou, _ = _evaluate(model, loader, device)
     print(f"test mean IoU = {iou:.4f}  ({len(pairs)} images)")
     return {"iou": iou, "num_images": len(pairs)}
