@@ -165,16 +165,23 @@ def train_model(
     )
     model = build_model(encoder_name).to(device)
 
+    # Freeze the encoder: only the decoder + segmentation head are trained.
+    for p in model.encoder.parameters():
+        p.requires_grad = False
+
     loss_fn = _make_loss(
         focal_alpha, focal_gamma, tversky_alpha, tversky_beta, tversky_gamma,
         focal_weight, tversky_weight,
     )
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+    optimizer = torch.optim.AdamW(
+        filter(lambda p: p.requires_grad, model.parameters()), lr=lr
+    )
 
     history = []
     best_iou = -1.0
     for epoch in range(1, epochs + 1):
         model.train()
+        model.encoder.eval()  # encoder is frozen; keep it in eval mode
         train_loss = 0.0
         for images, masks in train_loader:
             images, masks = images.to(device), masks.to(device)
