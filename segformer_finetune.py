@@ -168,7 +168,9 @@ def train_model(
     encoder_name="mit_b0",
     epochs=10,
     batch_size=8,
-    lr=1e-4,
+    encoder_lr=1e-5,
+    decoder_lr=1e-4,
+    freeze_encoder=True,
     img_size=512,
     focal_alpha=0.25,
     focal_gamma=2.0,
@@ -186,9 +188,14 @@ def train_model(
     IoU) are saved to SAVE_DIR/weights_filename; SAVE_DIR is created if needed.
     Focal/Tversky hyperparameters are exposed as arguments.
 
+    freeze_encoder: when True the encoder is frozen and only the decoder + head
+    train (at decoder_lr; encoder_lr is ignored). When False the encoder also
+    trains, with a separate (typically smaller) encoder_lr -- a discriminative
+    learning rate for fine-tuning the pretrained backbone.
+
     init_weights: optional path to a checkpoint (state_dict). When given, those
     weights are loaded before training resumes -- e.g. to continue from a
-    previous run with a different lr. The optimizer always starts fresh.
+    previous run. The optimizer always starts fresh.
     Returns (model, history, best_path).
     """
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -203,23 +210,30 @@ def train_model(
         model.load_state_dict(torch.load(init_weights, map_location=device))
         print(f"loaded init weights from {init_weights}")
 
-    # Freeze the encoder: only the decoder + segmentation head are trained.
-    for p in model.encoder.parameters():
-        p.requires_grad = False
+    # Decoder + segmentation head = everything outside model.encoder.
+    decoder_params = [p for n, p in model.named_parameters()
+                      if not n.startswith("encoder.")]
+    param_groups = [{"params": decoder_params, "lr": decoder_lr}]
+    if freeze_encoder:
+        for p in model.encoder.parameters():
+            p.requires_grad = False
+        print(f"encoder frozen; training decoder at lr={decoder_lr}")
+    else:
+        param_groups.append({"params": model.encoder.parameters(), "lr": encoder_lr})
+        print(f"training encoder at lr={encoder_lr}, decoder at lr={decoder_lr}")
 
     loss_fn = _make_loss(
         focal_alpha, focal_gamma, tversky_alpha, tversky_beta, tversky_gamma,
         focal_weight, tversky_weight,
     )
-    optimizer = torch.optim.AdamW(
-        filter(lambda p: p.requires_grad, model.parameters()), lr=lr
-    )
+    optimizer = torch.optim.AdamW(param_groups)
 
     history = []
     best_iou = -1.0
     for epoch in range(1, epochs + 1):
         model.train()
-        model.encoder.eval()  # encoder is frozen; keep it in eval mode
+        if freeze_encoder:
+            model.encoder.eval()  # frozen encoder stays in eval mode
         train_loss = 0.0
         tp = fp = fn = 0  # accumulated on-GPU; one sync per metric update
         n_batches = len(train_loader)
