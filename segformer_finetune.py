@@ -191,9 +191,8 @@ def train_model(
         train_loss = 0.0
         iou_sum, n_batches = 0.0, 0
         with tqdm(
-            total=len(train_loader.dataset),
+            total=len(train_loader),
             desc=f"epoch {epoch}/{epochs}",
-            unit="img",
         ) as pbar:
             for images, masks in train_loader:
                 images, masks = images.to(device), masks.to(device)
@@ -205,7 +204,7 @@ def train_model(
                 train_loss += loss.item() * images.size(0)
                 iou_sum += _iou(logits.detach(), masks)
                 n_batches += 1
-                pbar.update(images.size(0))
+                pbar.update(1)
                 pbar.set_postfix(loss=loss.item(), iou=iou_sum / n_batches)
         train_loss /= len(train_loader.dataset)
         train_iou = iou_sum / n_batches
