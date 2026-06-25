@@ -19,6 +19,7 @@ import numpy as np
 import segmentation_models_pytorch as smp
 import torch
 from torch.utils.data import DataLoader, Dataset
+from tqdm.auto import tqdm
 
 # Best weights are always written under this directory (created if missing).
 SAVE_DIR = "/kaggle/working/checkpoints"
@@ -183,13 +184,20 @@ def train_model(
         model.train()
         model.encoder.eval()  # encoder is frozen; keep it in eval mode
         train_loss = 0.0
-        for images, masks in train_loader:
-            images, masks = images.to(device), masks.to(device)
-            optimizer.zero_grad()
-            loss = loss_fn(model(images), masks)
-            loss.backward()
-            optimizer.step()
-            train_loss += loss.item() * images.size(0)
+        with tqdm(
+            total=len(train_loader.dataset),
+            desc=f"epoch {epoch}/{epochs}",
+            unit="img",
+        ) as pbar:
+            for images, masks in train_loader:
+                images, masks = images.to(device), masks.to(device)
+                optimizer.zero_grad()
+                loss = loss_fn(model(images), masks)
+                loss.backward()
+                optimizer.step()
+                train_loss += loss.item() * images.size(0)
+                pbar.update(images.size(0))
+                pbar.set_postfix(loss=loss.item())
         train_loss /= len(train_loader.dataset)
 
         val_iou = _evaluate(model, val_loader, device)
