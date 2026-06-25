@@ -86,8 +86,8 @@ def get_loaders(data_dir, encoder_name, img_size, batch_size, val_split):
     train_ds = SegDataset(train_pairs, _transforms(img_size, mean, std, True))
     val_ds = SegDataset(val_pairs, _transforms(img_size, mean, std, False))
 
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=2)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=2)
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=4)
+    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=4)
     return train_loader, val_loader
 
 
