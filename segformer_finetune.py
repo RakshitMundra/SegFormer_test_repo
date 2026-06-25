@@ -162,6 +162,7 @@ def train_model(
     tversky_gamma=1.0,
     focal_weight=1.0,
     tversky_weight=1.0,
+    init_weights=None,
     device=None,
 ):
     """Fine-tune SegFormer (binary) with a Focal + Tversky loss.
@@ -169,6 +170,10 @@ def train_model(
     Uses an 80/20 train/validation split. The best weights (highest validation
     IoU) are saved to SAVE_DIR/weights_filename; SAVE_DIR is created if needed.
     Focal/Tversky hyperparameters are exposed as arguments.
+
+    init_weights: optional path to a checkpoint (state_dict). When given, those
+    weights are loaded before training resumes -- e.g. to continue from a
+    previous run with a different lr. The optimizer always starts fresh.
     Returns (model, history, best_path).
     """
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -179,6 +184,9 @@ def train_model(
         data_dir, encoder_name, img_size, batch_size, val_split=0.2
     )
     model = build_model(encoder_name).to(device)
+    if init_weights is not None:
+        model.load_state_dict(torch.load(init_weights, map_location=device))
+        print(f"loaded init weights from {init_weights}")
 
     # Freeze the encoder: only the decoder + segmentation head are trained.
     for p in model.encoder.parameters():
